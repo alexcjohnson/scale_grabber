@@ -26,7 +26,7 @@ import argparse
 import serial
 from time import sleep
 from functools import partial
-import pygame
+import pythoncom
 import sys
 
 class KeyManager:
@@ -36,6 +36,7 @@ class KeyManager:
         self.watched_key_str = None
         self.callback = None
         self.quit_key_str = 'control-c-x'
+        self.paused = False
 
     def clean_key_name(self, event):
         # strip l/r off shift/control
@@ -45,12 +46,18 @@ class KeyManager:
         return key
 
     def mark_key_down(self, event):
+        if self.paused:
+            return 1
+
         key = self.clean_key_name(event)
         self.keys_down.add(key)
         self.latest_down = key
         if self.watched_key_str and self.callback:
             if self.keys_match(self.watched_key_str):
+                self.paused = True
+                sleep(1)
                 self.callback()
+                self.paused = False
                 return 0  # stop this event propagating
 
         if self.keys_match(self.quit_key_str):
@@ -59,6 +66,9 @@ class KeyManager:
         return 1  # any other key situation - let it propagate
 
     def mark_key_up(self, event):
+        if self.paused:
+            return 1
+
         self.keys_down.discard(self.clean_key_name(event))
         self.latest_down = None
         return 1  # always let this event continue propagating
@@ -81,7 +91,7 @@ class KeyManager:
 def get_weight(conn):
     # wait for data to arrive from a request
     sleep(0.1)
-    lines = str(conn.read_all()).strip()
+    lines = conn.read_all().decode().strip()
     parts = lines.split(' ')
     for part in parts:
         try:
@@ -90,18 +100,20 @@ def get_weight(conn):
         except ValueError:
             pass
 
-    if lines:
+    if len(lines):
         print('Data received but no weight found:')
         print(lines)
-    else:
-        print('no data received')
 
     return None  # we didn't find a value
 
 
 def type_weight(weight):
-    print('~{:.1f}~'.format(weight))
-    pyautogui.typewrite('{:.1f}'.format(weight))
+    wstr = '{:.1f}'.format(weight)
+    # print(wstr)
+    pyautogui.typewrite(wstr)
+    # for char in wstr:
+    #     pyautogui.press(char)
+    #     sleep(0.05)
 
 
 def grab_weight(conn):
@@ -130,10 +142,7 @@ def watch_keyboard(conn, key):
 
     km.watch_for_key(hm, key, partial(request_weight, conn))
 
-    pygame.init()
-    while True:
-        sleep(0.05)
-        pygame.event.pump()
+    pythoncom.PumpMessages()
 
 
 # blocking - if we want to watch both keyboard and line, do we need
@@ -169,4 +178,4 @@ if __name__ == '__main__':
             print('press ctrl-c to quit')
             watch_line(conn)
 
-# C:\Users\Volunteer>c:\Users\Volunteer\AppData\Local\Programs\Python\Python36-32\python.exe c:\scale_grabber\scale_grabber.py COM3 --key control-add
+# c:\Users\Volunteer\AppData\Local\Programs\Python\Python36-32\python.exe c:\scale_grabber\scale_grabber.py COM3 --key control-add
