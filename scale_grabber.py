@@ -24,11 +24,65 @@ import pyautogui
 import pyHook
 import argparse
 import serial
+from time import sleep
+from functools import partial
+import pygame
+import sys
 
+class KeyManager:
+    def __init__(self):
+        self.keys_down = set()
+        self.latest_down = None
+        self.watched_key_str = None
+        self.callback = None
+        self.quit_key_str = 'control-c-x'
 
-def get_weight(conn, timeout=1):
-    line = conn.readline()
-    parts = line.split(' ')
+    def clean_key_name(self, event):
+        # strip l/r off shift/control
+        key = event.Key.lower()
+        if len(key) > 1 and key[0] in ('l', 'r'):
+            key = key[1:]
+        return key
+
+    def mark_key_down(self, event):
+        key = self.clean_key_name(event)
+        self.keys_down.add(key)
+        self.latest_down = key
+        if self.watched_key_str and self.callback:
+            if self.keys_match(self.watched_key_str):
+                self.callback()
+                return 0  # stop this event propagating
+
+        if self.keys_match(self.quit_key_str):
+            sys.exit(1)
+
+        return 1  # any other key situation - let it propagate
+
+    def mark_key_up(self, event):
+        self.keys_down.discard(self.clean_key_name(event))
+        self.latest_down = None
+        return 1  # always let this event continue propagating
+
+    def keys_match(self, key_str):
+        key_combo = key_str.split('-')
+        key_combo_set = set(key_combo)
+        return (self.latest_down in key_combo and
+                (len(self.latest_down) == 1 or  # so no control or shift etc
+                 self.latest_down == key_combo[-1]) and
+                key_combo_set.issubset(self.keys_down))
+
+    def watch_for_key(self, hook_manager, key_str, callback):
+        self.watched_key_str = key_str.lower()
+        self.callback = callback
+        hook_manager.KeyDown = self.mark_key_down
+        hook_manager.KeyUp = self.mark_key_up
+        hook_manager.HookKeyboard()
+
+def get_weight(conn):
+    # wait for data to arrive from a request
+    sleep(0.1)
+    lines = str(conn.read_all()).strip()
+    parts = lines.split(' ')
     for part in parts:
         try:
             val = float(part)
@@ -36,15 +90,18 @@ def get_weight(conn, timeout=1):
         except ValueError:
             pass
 
-    if line and line.strip():
+    if lines:
         print('Data received but no weight found:')
-        print(line)
+        print(lines)
+    else:
+        print('no data received')
 
-    return None  # we didn't find a value (timeout?)
+    return None  # we didn't find a value
 
 
 def type_weight(weight):
-    pyautogui.typewrite('{:.2f}'.format(weight))
+    print('~{:.1f}~'.format(weight))
+    pyautogui.typewrite('{:.1f}'.format(weight))
 
 
 def grab_weight(conn):
@@ -58,17 +115,10 @@ def request_weight(conn):
     conn.reset_input_buffer()
 
     # ask for gross weight (should it be N for net instead?)
-    conn.write('G\r\n')
+    conn.write(b'G\r\n')
 
-
-def keypress_handler(conn, key):
-    def on_key_event(event):
-        if event.Key == key:
-            grab_weight(conn)
-        # regardless, let the event continue propagating
-        return True
-
-    return on_key_event
+    # then grab the result
+    grab_weight(conn)
 
 
 def watch_keyboard(conn, key):
@@ -76,12 +126,14 @@ def watch_keyboard(conn, key):
     # this is an alternative to pressing "print" on the scale itself
     # is this easier?
     hm = pyHook.HookManager()
-    hm.KeyDown = keypress_handler(conn, key)
-    hm.HookKeyboard()
+    km = KeyManager()
 
-    # TODO: needed? What does this do? Is this the infinite event loop?
-    import pythoncom
-    pythoncom.PumpMessages()
+    km.watch_for_key(hm, key, partial(request_weight, conn))
+
+    pygame.init()
+    while True:
+        sleep(0.05)
+        pygame.event.pump()
 
 
 # blocking - if we want to watch both keyboard and line, do we need
@@ -100,14 +152,21 @@ if __name__ == '__main__':
     parser.add_argument('--key', help=('if provided, take the weight when '
                                        'this key is pressed, rather than when '
                                        'PRINT is pressed on the scale itself. '
-                                       'eg: f12'))
+                                       'eg: control-add'))
 
     args = parser.parse_args()
 
     port = args.port
 
     with serial.Serial(port) as conn:
+        print('Leave this program running, but you can minimize it')
         if args.key:
+            print('press ' + args.key + ' to insert the current weight at your cursor')
+            print('press control-c-x all together to quit')
             watch_keyboard(conn, args.key)
         else:
+            print('press the print button on the scale to insert the current weight at your cursor')
+            print('press ctrl-c to quit')
             watch_line(conn)
+
+# C:\Users\Volunteer>c:\Users\Volunteer\AppData\Local\Programs\Python\Python36-32\python.exe c:\scale_grabber\scale_grabber.py COM3 --key control-add
